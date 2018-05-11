@@ -37,6 +37,8 @@ setup(
     version=version,
     description=DESCRIPTION,
     long_description=long_description,
+    long_description_content_type='text/markdown',
+    setup_requires=['setuptools>=38.6.0'],
     author=AUTHOR,
     author_email=EMAIL,
     url=URL,

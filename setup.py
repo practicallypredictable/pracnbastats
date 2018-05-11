@@ -1,26 +1,35 @@
 from setuptools import setup, find_packages
 from codecs import open
 from os import path
+from pracnbastats import (
+    __version__,
+    __url__,
+    __author__,
+    __author_email__,
+    __license__,
+    __status__,
+)
 
 here = path.abspath(path.dirname(__file__))
 
 with open(path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
-with open(path.join(here, 'VERSION.txt')) as version_file:
-    version = version_file.read().strip()
-
+# Get version and other info from __init__.py
+# For old-style VERSION.txt, use:
+# with open(path.join(here, 'VERSION.txt')) as version_file:
+#    version = version_file.read().strip()
+version = __version__
 NAME = 'pracnbastats'
 DESCRIPTION = 'Scrape stats.nba.com.'
-URL = 'https://github.com/practicallypredictable/pracnbastats'
-EMAIL = 'practicallypredictable@practicallypredictable.com'
-AUTHOR = 'Practically Predictable'
-LICENSE = 'MIT'  # Change trove classifier below if using a different license
+URL = __url__
+AUTHOR = __author__
+EMAIL = __author_email__
+LICENSE = 'MIT'  # Make sure consistent with trove classifiers below
 
 REQUIRED = [
     'numpy',
     'pandas',
-    'tqdm',
 ]
 
 setup(
@@ -39,8 +48,8 @@ setup(
     classifiers=[
         # Trove classifiers
         # Full list: https://pypi.python.org/pypi?%3Aaction=list_classifiers
-        'Development Status :: 3 - Alpha',
-        'License :: OSI Approved :: MIT License',
+        __status__,
+        __license__,
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: Implementation :: CPython',
         'Programming Language :: Python :: Implementation :: PyPy'

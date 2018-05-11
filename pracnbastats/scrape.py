@@ -1,146 +1,79 @@
-import requests
-from time import sleep
 from collections import OrderedDict
+import logging
+import requests
 import pandas as pd
+from . import params
+from . import exceptions
 
-USER_AGENT = (
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/61.0.3163.100 Safari/537.36'
-)
+log = logging.getLogger(__name__)
 
-REQUEST_HEADERS = {
-    'user-agent': USER_AGENT,
-    'Dnt': '1',
-    'Accept-Encoding': 'gzip, deflate, sdch',
-    'Accept-Language': 'en',
-    'origin': 'http://stats.nba.com',
-    'Cache-Control': 'max-age=0',
-    'Connection': 'keep-alive',
-}
 
-DEFAULT_REFERER = 'scores'
-DEFAULT_TIMEOUT = 10
+class NBASession():
+    DEFAULT_BASE_URL = 'http://stats.nba.com/stats'
+    DEFAULT_REFERER = 'scores'
+    DEFAULT_TIMEOUT = 10
+    REQUEST_HEADERS = {
+        'dnt': '1',
+        'accept-encoding': 'gzip, deflate, sdch',
+        'accept-language': 'en',
+        'origin': 'http://stats.nba.com',
+        'cache-control': 'max-age=0',
+        'connection': 'keep-alive',
+    }
 
-NBA_STATS_BASE_URL = 'http://stats.nba.com/stats'
-
-class NBAStatsRequests():
-    def __init__(self,
-            base_url=NBA_STATS_BASE_URL,
-            headers=REQUEST_HEADERS,
-            referer=DEFAULT_REFERER,
-            allow_redirects=False,
-            timeout=DEFAULT_TIMEOUT):
-        self._base_url = base_url
-        self._headers = headers
+    def __init__(self, *, user_agent, referer=DEFAULT_REFERER):
+        self._headers = NBASession.REQUEST_HEADERS
+        self._headers['user-agent'] = user_agent
         self._headers['referer'] = referer
-        self._allow_redirects = allow_redirects
-        self._timeout = timeout
 
-    def get(self, api_endpoint, params):
-        url = f'{self._base_url}/{api_endpoint}'
-        response = requests.get(
-            url,
-            headers=self._headers,
-            params=params,
-            allow_redirects=self._allow_redirects,
-            timeout=self._timeout,
-        )
-        response.raise_for_status()
+    def get(self, *,
+            base_url=None, api_endpoint, headers=None, api_params=None,
+            allow_redirects=False, timeout=DEFAULT_TIMEOUT):
+        if not base_url:
+            base_url = NBASession.DEFAULT_BASE_URL
+        url = f'{base_url}/{api_endpoint}'
+        if not headers:
+            headers = self._headers
+        if isinstance(api_params, params.Arguments):
+            api_params = api_params.for_request
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                params=api_params,
+                allow_redirects=allow_redirects,
+                timeout=timeout,
+            )
+        except requests.exceptions.RequestException as e:
+            raise exceptions.ExternalException(
+                msg='call to requests failed',
+                original_exception=e,
+            )
         return response
 
-DEFAULT_NBA_STATS_REQUESTS = NBAStatsRequests()
-
-class NBAStats():
-    def __init__(self, *,
-            api_endpoint,
-            params=None,
-            index=0,
-            nba_stats_requests=None,
-            filehandler=None,
-            tablename=None):
-        self._api_endpoint = api_endpoint
-        self._params = params
-        self._index = index
-        if nba_stats_requests:
-            self._requests = nba_stats_requests
-        else:
-            self._requests = DEFAULT_NBA_STATS_REQUESTS
-        self._response = None
-        if filehandler:
-            if not tablename:
-                tablename = api_endpoint
-            self._scraped = filehandler.load(
-                scraper=self._scrape_data,
-                tablename=tablename,
-                params=self._params,
-            )
-        else:
-            self._scraped = self._scrape_data()
-
-    @property
-    def api_endpoint(self):
-        return self._api_endpoint
-
-    @property
-    def params(self):
-        return self._params
-
-    @property
-    def request_params(self):
-        return self._params.sorted_by_key()
-
-    @property
-    def response(self):
-        return self._response
-
-    @property
-    def url(self):
-        return self._response.request.url
-
-    @property
-    def scraped(self):
-        return self._scraped
-
-    def _scrape_data(self):
-        params_for_request = self._params.for_request
-        self._response = NBAStats.get_response(
-                                self._api_endpoint,
-                                params_for_request,
-                                self._requests)
-        json = self._response.json()
-        df = pd.DataFrame(NBAStats.process_json(json, self._index))
-        return df
-
-    @staticmethod
-    def get(api_endpoint, params_for_request, index=0,
-                nba_stats_requests=DEFAULT_NBA_STATS_REQUESTS):
-        response = NBAStats.get_response(
-                                api_endpoint,
-                                params_for_request,
-                                nba_stats_requests)
+    def records(self, *, api_endpoint, api_params=None, index=0):
+        response = self.get(
+            api_endpoint=api_endpoint,
+            api_params=api_params.for_request,
+        )
         json = response.json()
-        return NBAStats.process_json(json, index)
+        return NBASession.process_json(json, index)
 
     @staticmethod
-    def get_response(api_endpoint, params_for_request,
-                nba_stats_requests=DEFAULT_NBA_STATS_REQUESTS):
-        return nba_stats_requests.get(api_endpoint, params_for_request)
-
-    @staticmethod
-    def process_json(json, index):
+    def process_json(json, index=0):
         """Process JSON from stats.nba.com and return list of dicts."""
         if 'resultSets' in json.keys():
             results = 'resultSets'
         elif 'resultSet' in json.keys():
             results = 'resultSet'
         else:
-            raise KeyError('cannot find results in:', json.keys())
+            msg = f'cannot find results in {json.keys()}'
+            raise exceptions.ScrapeJSONException(msg)
         try:
-            headers = NBAStats._headers(json[results][index]['headers'])
+            headers = NBASession._headers(json[results][index]['headers'])
             rows = json[results][index]['rowSet']
         except KeyError:
-            headers = NBAStats._headers(json[results]['headers'])
+            headers = NBASession._headers(json[results]['headers'])
             rows = json[results]['rowSet']
         assert len(headers) == len(rows[0])
         if len(rows) > 1:
@@ -164,7 +97,114 @@ class NBAStats():
             for i, top in enumerate(top_cols):
                 for j in range(col_span):
                     k = col_skip + i*col_span + j
-                    cols.append(f'{bottom_cols[k]}{sep}{top_cols[i]}')
+                    cols.append(f'{bottom_cols[k]}{sep}{top}')
             return cols
         else:
             raise ValueError('more than two header rows?', rows)
+
+
+class NBAScraper():
+    def __init__(self, *, session, store, force_reload=False, archive=True):
+        self._session = session
+        self._store = store
+        self._force_reload = force_reload
+        self._archive = archive
+
+    @property
+    def session(self):
+        return self._session
+
+    @property
+    def store(self):
+        return self._store
+
+    @property
+    def force_reload(self):
+        return self._force_reload
+
+    @force_reload.setter
+    def force_reload(self, value):
+        self._force_reload = value
+
+    @property
+    def archive(self):
+        return self._archive
+
+    @archive.setter
+    def archive(self, value):
+        self._archive = value
+
+    def get(self, *, api_endpoint, api_params=None, index=0):
+        records = self.session.records(
+            api_endpoint=api_endpoint,
+            api_params=api_params,
+            index=index,
+        )
+        if isinstance(records, list):
+            df = pd.DataFrame(records)
+        else:
+            df = pd.DataFrame(list(records))
+        return df
+
+    def load(self, *, table):
+        if not self.force_reload and self.store and table.exists(self.store):
+            df = table.load(self.store)
+        else:
+            df = self.get(
+                api_endpoint=table.api_endpoint,
+                api_params=table.api_params,
+                index=table.index,
+            )
+        if self.store and (self.force_reload or not table.exists(self.store)):
+            table.save(store=self.store, data=df, archive=self.archive)
+        return df
+
+    def load_pipeline(self, *, table, pipeline):
+        if not self.force_reload and self.store and table.exists(self.store):
+            df = table.load(self.store)
+        else:
+            funcs = iter(pipeline)
+            func = next(funcs)
+            df = func(self.session)
+            for func in funcs:
+                df = func(df, self.session)
+            if self.store:
+                table.save(store=self.store, data=df, archive=self.archive)
+        return df
+
+
+class NBAStats():
+    def __init__(self, *, scraper, table):
+        self._scraper = scraper
+        self._table = table
+        self._data = self.scraper.load(
+            table=table,
+        )
+
+    @property
+    def scraper(self):
+        return self._scraper
+
+    @property
+    def table(self):
+        return self._table
+
+    @property
+    def api_endpoint(self):
+        return self.table.api_endpoint
+
+    @property
+    def api_params(self):
+        return self.table.api_params
+
+    @property
+    def request_params(self):
+        return self.table.api_params.sorted_by_key()
+
+    @property
+    def index(self):
+        return self.table.index
+
+    @property
+    def data(self):
+        return self._data

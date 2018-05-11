@@ -1,18 +1,22 @@
 from enum import Enum
 from collections import OrderedDict
-import numpy as np
 import pandas as pd
 from . import params
-from .scrape import NBAStatsRequests, NBAStats
-from . import utils
+from . import scrape
 
-MIN_PLAYTYPE_YEAR = 2015 # Earliest season for which site has playtype data
-NBA_PLAYTYPE_BASE_URL = 'https://stats-prod.nba.com/wp-json/statscms/v1/synergy/'
-DEFAULT_NBA_PLAYTYPE_REQUESTS = NBAStatsRequests(base_url=NBA_PLAYTYPE_BASE_URL)
+MIN_PLAYTYPE_YEAR = 2015   # Earliest season for which site has playtype data
+NBA_PLAYTYPE_BASE_URL = (
+    'https://stats-prod.nba.com/wp-json/statscms/v1/synergy/'
+)
+DEFAULT_NBA_PLAYTYPE_REQUESTS = scrape.NBAStatsRequests(
+                                    base_url=NBA_PLAYTYPE_BASE_URL
+                                )
+
 
 class Stats(Enum):
     Offensive = 'offensive'
     Defensive = 'defensive'
+
     @classmethod
     def default(cls):
         return cls.Offensive
@@ -30,13 +34,15 @@ class Categories(Enum):
     OffScreen = 'OffScreen'
     Putbanks = 'OffRebound'
     Misc = 'Misc'
+
     @classmethod
     def default(cls):
         return cls.Transition
 
 
-class NBAPlayTypeStats(NBAStats):
-    def __init__(self,
+class PlayTypeStats(scrape.NBAStats):
+    def __init__(
+            self,
             api_endpoint,
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
@@ -72,7 +78,7 @@ class NBAPlayTypeStats(NBAStats):
 
     def _scrape_data(self):
         params_for_request = self._params.for_request
-        self._response = NBAStats.get_response(
+        self._response = scrape.NBAStats.get_response(
                                 self._api_endpoint,
                                 params_for_request,
                                 self._requests)
@@ -81,8 +87,9 @@ class NBAPlayTypeStats(NBAStats):
         return df
 
 
-class PlayerPlayTypes(NBAPlayTypeStats):
-    def __init__(self, *,
+class PlayerPlayTypes(PlayTypeStats):
+    def __init__(
+            self, *,
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
             stats=Stats.default(),
@@ -99,8 +106,9 @@ class PlayerPlayTypes(NBAPlayTypeStats):
             filehandler=filehandler)
 
 
-class TeamPlayTypes(NBAPlayTypeStats):
-    def __init__(self, *,
+class TeamPlayTypes(PlayTypeStats):
+    def __init__(
+            self, *,
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
             stats=Stats.default(),

@@ -1,13 +1,17 @@
-from collections import namedtuple
 import numpy as np
 import pandas as pd
 from . import params
-from .scrape import NBAStatsRequests, NBAStats
-from . import format
+from . import scrape
+from .table import Table
+import logging
 
-class BoxScores(NBAStats):
+log = logging.getLogger(__name__)
+
+
+class BoxScores(scrape.NBAStats):
     """Player or team box scores for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             player_team_flag=params.PlayerTeamFlag.default(),
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
@@ -15,10 +19,8 @@ class BoxScores(NBAStats):
             date_to=params.DateTo.default(),
             sorter=params.Sorter.default(),
             sort_direction=params.SortDirection.default(),
-            counter=params.NBA_COUNTER,
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            counter=params.NBACounter.default()):
+        api_params = params.Arguments(
             PlayerOrTeam=player_team_flag,
             Season=season,
             SeasonType=season_type,
@@ -28,16 +30,15 @@ class BoxScores(NBAStats):
             Direction=sort_direction,
             Counter=counter,
         )
+        table = Table(
+            api_endpoint='leaguegamelog',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguegamelog",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
-        self._df = self._format()
-
-    @property
-    def data(self):
-        return self._df
+            scraper=scraper,
+            table=table,
+        )
+        self._data = self._format()
 
     def select(self, home_road=None, win_loss=None):
         rows = self.data.copy()
@@ -77,35 +78,52 @@ class BoxScores(NBAStats):
 
     @property
     def matchups(self):
+        home_columns = [
+            'season',
+            'season_type',
+            'game_id',
+            'date',
+            'video',
+            'team_id',
+            'team_abbr',
+            'pts',
+            'win_loss',
+        ]
         home = (
-            self.data.loc[
-                self.data['home_road'] == 'H',
-                ['season', 'season_type', 'game_id', 'date', 'team_id', 'team_abbr', 'pts', 'win_loss',]
-            ].drop_duplicates(subset=['game_id'])
+            self.data.loc[self.data['home_road'] == 'H', home_columns]
+            .drop_duplicates(subset=['game_id'])
             .set_index(['game_id'])
         )
+        road_columns = [
+            'game_id',
+            'team_id',
+            'team_abbr',
+            'pts',
+            'win_loss',
+        ]
         road = (
-            self.data.loc[
-                self.data['home_road'] == 'R',
-                ['game_id', 'team_id', 'team_abbr', 'pts', 'win_loss',]
-            ].drop_duplicates(subset=['game_id'])
+            self.data.loc[self.data['home_road'] == 'R', road_columns]
+            .drop_duplicates(subset=['game_id'])
             .set_index(['game_id'])
         )
         df = home.join(road, lsuffix='_h', rsuffix='_r')
         df = df.reset_index()
         df['hr_winner'] = np.where(df['win_loss_h'] == 'W', 'H', 'R')
+
         def winner(row):
             if row['hr_winner'] == 'H':
                 return row['team_abbr_h']
             else:
                 return row['team_abbr_r']
         df['winner'] = df.apply(winner, axis=1)
+
         def loser(row):
             if row['hr_winner'] == 'H':
                 return row['team_abbr_r']
             else:
                 return row['team_abbr_h']
         df['loser'] = df.apply(loser, axis=1)
+
         def mov(row):
             if row['hr_winner'] == 'H':
                 return row['pts_h'] - row['pts_r']
@@ -115,11 +133,11 @@ class BoxScores(NBAStats):
         return df
 
     def _format(self):
-        df = self.scraped.copy()
-        df = format.season_id(df)
-        df = format.matchup(df)
+        df = self.data.copy()
+        df = BoxScores._season_id(df)
+        df = BoxScores._matchup(df)
         df['video'] = np.where(df['VIDEO_AVAILABLE'], 'Y', 'N')
-        df = df.drop(columns=['TEAM_NAME', 'VIDEO_AVAILABLE',])
+        df = df.drop(columns=['TEAM_NAME', 'VIDEO_AVAILABLE'])
         df = df.rename(columns={
             'TEAM_ABBREVIATION': 'team_abbr',
             'GAME_DATE': 'date',
@@ -135,43 +153,51 @@ class BoxScores(NBAStats):
         df['video'] = df['video'].astype('category')
         return df
 
+    @staticmethod
+    def _season_id(df):
+        """Extract season and season type from a box score season ID."""
+        df['season'] = df['SEASON_ID'].apply(
+            lambda s: params.Season.season_from_id(s).start_year
+        )
+        df['season_type'] = df['SEASON_ID'].apply(
+            lambda s: params.SeasonType.season_type_abbr(s)
+        )
+        df = df.drop(columns=['SEASON_ID'])
+        return df
 
-class Leaders(NBAStats):
+    @staticmethod
+    def _matchup(df):
+        """Add more useful columns based upon matchup information."""
+        df['home_road'] = np.where(df['MATCHUP'].str.contains('@'), 'R', 'H')
+        df['opp_team_abbr'] = df['MATCHUP'].str.split(' ').str.get(-1)
+        df = df.drop(columns=['MATCHUP'])
+        return df
+
+
+class Leaders(scrape.NBAStats):
     """League-wide ranking of players for season by statistic category."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             per_mode=params.PerMode.default(),
             stat_category=params.StatCategory.default(),
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
-            scope=params.PlayerScopeLeagueLeaders.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        categories = [
-            'PTS',
-            'MIN',
-            'OREB',
-            'DREB',
-            'REB',
-            'AST',
-            'STL',
-            'BLK'
-            'TOV',
-            'EFF',
-        ]
-        if stat_category.param not in categories:
-            raise ValueError('unsupported category', stat_category)
-        args = params.Arguments(
+            scope=params.PlayerScopeLeagueLeaders.default()):
+        api_params = params.Arguments(
             PerMode=per_mode,
             StatCategory=stat_category,
             Season=season,
             SeasonType=season_type,
             Scope=scope,
         )
+        table = Table(
+            api_endpoint='leagueleaders',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leagueleaders",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
     @classmethod
     def Rookies(cls, **kwargs):
@@ -179,9 +205,10 @@ class Leaders(NBAStats):
         return cls(**kwargs)
 
 
-class PlayerTracking(NBAStats):
-    """Aggregate tracking statistics by player or team for season across league."""
-    def __init__(self, *,
+class PlayerTracking(scrape.NBAStats):
+    """Aggregate tracking statistics by player or team for season."""
+    def __init__(
+            self, *, scraper,
             team=None,
             player_team_flag=params.PlayerTeamTracking.default(),
             pt_measure_type=params.PTMeasureType.default(),
@@ -217,12 +244,10 @@ class PlayerTracking(NBAStats):
             weight=params.PlayerWeight.default(),
             height=params.PlayerHeight.default(),
             game_scope=params.GameScopeBlankDefault.default(),
-            counter=params.NBA_COUNTER,
+            counter=params.NBACounter.default(),
             sorter=params.Sorter.default(),
-            sort_direction=params.SortDirection.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            sort_direction=params.SortDirection.default()):
+        api_params = params.Arguments(
             team=team,
             PlayerOrTeam=player_team_flag,
             PtMeasureType=pt_measure_type,
@@ -262,16 +287,20 @@ class PlayerTracking(NBAStats):
             Sorter=sorter,
             Direction=sort_direction,
         )
+        table = Table(
+            api_endpoint='leaguedashptstats',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashptstats",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class PlayersDashboard(NBAStats):
+class PlayersDashboard(scrape.NBAStats):
     """Player box score and related statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             measure_type=params.MeasureType.default(),
             season=params.Season.default(),
@@ -306,12 +335,10 @@ class PlayersDashboard(NBAStats):
             weight=params.PlayerWeight.default(),
             height=params.PlayerHeight.default(),
             game_scope=params.GameScopeBlankDefault.default(),
-            counter=params.NBA_COUNTER,
+            counter=params.NBACounter.default(),
             sorter=params.Sorter.default(),
-            sort_direction=params.SortDirection.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            sort_direction=params.SortDirection.default()):
+        api_params = params.Arguments(
             team=team,
             MeasureType=measure_type,
             Season=season,
@@ -350,16 +377,20 @@ class PlayersDashboard(NBAStats):
             Sorter=sorter,
             Direction=sort_direction,
         )
+        table = Table(
+            api_endpoint='leaguedashplayerstats',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashplayerstats",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsDashboard(NBAStats):
+class TeamsDashboard(scrape.NBAStats):
     """Team box score and related statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             measure_type=params.MeasureType.default(),
             season=params.Season.default(),
@@ -388,12 +419,10 @@ class TeamsDashboard(NBAStats):
             player_experience=params.PlayerExperience.default(),
             starter_bench=params.StarterBench.default(),
             game_scope=params.GameScopeBlankDefault.default(),
-            counter=params.NBA_COUNTER,
+            counter=params.NBACounter.default(),
             sorter=params.Sorter.default(),
-            sort_direction=params.SortDirection.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            sort_direction=params.SortDirection.default()):
+        api_params = params.Arguments(
             team=team,
             MeasureType=measure_type,
             Season=season,
@@ -426,16 +455,20 @@ class TeamsDashboard(NBAStats):
             Sorter=sorter,
             Direction=sort_direction,
         )
+        table = Table(
+            api_endpoint='leaguedashteamstats',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashteamstats",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsClutchDashboard(NBAStats):
+class TeamsClutchDashboard(scrape.NBAStats):
     """Team clutch-time statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             clutch_time=params.ClutchTime.default(),
             ahead_behind=params.AheadBehind.default(),
@@ -467,12 +500,12 @@ class TeamsClutchDashboard(NBAStats):
             player_experience=params.PlayerExperience.default(),
             starter_bench=params.StarterBench.default(),
             game_scope=params.GameScopeBlankDefault.default(),
-            counter=params.NBA_COUNTER,
+            counter=params.NBACounter.default(),
             sorter=params.Sorter.default(),
             sort_direction=params.SortDirection.default(),
             nba_stats_requests=None,
             filehandler=None):
-        args = params.Arguments(
+        api_params = params.Arguments(
             team=team,
             ClutchTime=clutch_time,
             AheadBehind=ahead_behind,
@@ -508,16 +541,20 @@ class TeamsClutchDashboard(NBAStats):
             Sorter=sorter,
             Direction=sort_direction,
         )
+        table = Table(
+            api_endpoint='leaguedashteamclutch',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashteamclutch",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsDefenseDashboard(NBAStats):
+class TeamsDefenseDashboard(scrape.NBAStats):
     """Team defensive statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             defense_category=params.DefenseCategory.default(),
             season=params.Season.default(),
@@ -538,10 +575,8 @@ class TeamsDefenseDashboard(NBAStats):
             game_location=params.GameLocation.default(),
             shot_clock_range=params.ShotClockRange.default(),
             period=params.Period.default(),
-            game_segment=params.GameSegment.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            game_segment=params.GameSegment.default()):
+        api_params = params.Arguments(
             team=team,
             DefenseCategory=defense_category,
             Season=season,
@@ -563,16 +598,20 @@ class TeamsDefenseDashboard(NBAStats):
             ShotClockRange=shot_clock_range,
             Period=period,
         )
+        table = Table(
+            api_endpoint='leaguedashptteamdefend',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashptteamdefend",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsShotLocations(NBAStats):
+class TeamsShotLocations(scrape.NBAStats):
     """Team shooting locations for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             measure_type=params.MeasureType.default(),
             distance_range=params.DistanceRange.default(),
@@ -600,10 +639,8 @@ class TeamsShotLocations(NBAStats):
             player_position=params.PlayerPosition.default(),
             player_experience=params.PlayerExperience.default(),
             starter_bench=params.StarterBench.default(),
-            game_scope=params.GameScopeBlankDefault.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            game_scope=params.GameScopeBlankDefault.default()):
+        api_params = params.Arguments(
             team=team,
             MeasureType=measure_type,
             DistanceRange=distance_range,
@@ -633,11 +670,14 @@ class TeamsShotLocations(NBAStats):
             StarterBench=starter_bench,
             GameScope=game_scope,
         )
+        table = Table(
+            api_endpoint='leaguedashteamshotlocations',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashteamshotlocations",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
     @classmethod
     def OpponentOverall(cls, **kwargs):
@@ -645,9 +685,10 @@ class TeamsShotLocations(NBAStats):
         return cls(**kwargs)
 
 
-class TeamsShotDashboard(NBAStats):
+class TeamsShotDashboard(scrape.NBAStats):
     """Team shooting statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             general_range=params.GeneralRange.default(),
             shot_clock_range=params.ShotClockRange.default(),
@@ -675,10 +716,8 @@ class TeamsShotDashboard(NBAStats):
             game_segment=params.GameSegment.default(),
             player_position=params.PlayerPosition.default(),
             player_experience=params.PlayerExperience.default(),
-            starter_bench=params.StarterBench.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            starter_bench=params.StarterBench.default()):
+        api_params = params.Arguments(
             team=team,
             GeneralRange=general_range,
             ShotClockRange=shot_clock_range,
@@ -708,16 +747,20 @@ class TeamsShotDashboard(NBAStats):
             PlayerExperience=player_experience,
             StarterBench=starter_bench,
         )
+        table = Table(
+            api_endpoint='leaguedashteamptshot',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashteamptshot",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsOpponentShotDashboard(NBAStats):
+class TeamsOpponentShotDashboard(scrape.NBAStats):
     """Team opponents' shooting statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             team=None,
             general_range=params.GeneralRange.default(),
             shot_clock_range=params.ShotClockRange.default(),
@@ -745,10 +788,8 @@ class TeamsOpponentShotDashboard(NBAStats):
             game_segment=params.GameSegment.default(),
             player_position=params.PlayerPosition.default(),
             player_experience=params.PlayerExperience.default(),
-            starter_bench=params.StarterBench.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            starter_bench=params.StarterBench.default()):
+        api_params = params.Arguments(
             team=team,
             GeneralRange=general_range,
             ShotClockRange=shot_clock_range,
@@ -778,16 +819,20 @@ class TeamsOpponentShotDashboard(NBAStats):
             PlayerExperience=player_experience,
             StarterBench=starter_bench,
         )
+        table = Table(
+            api_endpoint='leaguedashoppptshot',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguedashoppptshot",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )
 
 
-class TeamsHustleDashboard(NBAStats):
+class TeamsHustleDashboard(scrape.NBAStats):
     """Team hustle statistics for season across league."""
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper, force_reload=False, archive=True,
             team=None,
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
@@ -805,10 +850,8 @@ class TeamsHustleDashboard(NBAStats):
             game_outcome=params.GameOutcome.default(),
             game_location=params.GameLocation.default(),
             player_position=params.PlayerPosition.default(),
-            player_experience=params.PlayerExperience.default(),
-            nba_stats_requests=None,
-            filehandler=None):
-        args = params.Arguments(
+            player_experience=params.PlayerExperience.default()):
+        api_params = params.Arguments(
             team=team,
             Season=season,
             SeasonType=season_type,
@@ -828,8 +871,11 @@ class TeamsHustleDashboard(NBAStats):
             PlayerPosition=player_position,
             PlayerExperience=player_experience,
         )
+        table = Table(
+            api_endpoint='leaguehustlestatsteam',
+            api_params=api_params,
+        )
         super().__init__(
-            api_endpoint="leaguehustlestatsteam",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
+            scraper=scraper,
+            table=table,
+        )

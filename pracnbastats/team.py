@@ -1,24 +1,22 @@
-from collections import namedtuple
 import numpy as np
-import pandas as pd
 from . import params
 from . import scrape
 from . import utils
-from . import format
 from . import league
 
+
 class BoxScores(league.BoxScores):
-    def __init__(self, *,
+    def __init__(
+            self, *, scraper,
             season=params.Season.default(),
             season_type=params.SeasonType.default(),
             date_from=params.DateFrom.default(),
             date_to=params.DateTo.default(),
-            counter=params.NBA_COUNTER,
+            counter=params.NBACounter.default(),
             sorter=params.Sorter.default(),
-            sort_direction=params.SortDirection.default(),
-            nba_stats_requests=None,
-            filehandler=None):
+            sort_direction=params.SortDirection.default()):
         super().__init__(
+            scraper=scraper,
             season=season,
             season_type=season_type,
             date_from=date_from,
@@ -27,13 +25,11 @@ class BoxScores(league.BoxScores):
             counter=counter,
             sorter=sorter,
             sort_direction=sort_direction,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler
         )
         self._additional_formatting()
 
     def _additional_formatting(self):
-        self._df = self._df.rename(columns={
+        self._data = self._data.rename(columns={
             'plus_minus': 'mov',
         })
         start = [
@@ -50,7 +46,11 @@ class BoxScores(league.BoxScores):
         end = [
             'video',
         ]
-        self._df = format.order_columns(self._df, first_cols=start, last_cols=end)
+        self._data = utils.order_columns(
+            self._data,
+            first_cols=start,
+            last_cols=end
+        )
 
     @property
     def team_records(self):
@@ -65,8 +65,8 @@ class BoxScores(league.BoxScores):
         }).set_index(['team_abbr'])
         home = (
             df.groupby(['team_abbr_h'])['win_loss_h']
-                .value_counts()
-                .unstack()
+            .value_counts()
+            .unstack()
         )
         road = (
             df.groupby(['team_abbr_r'])['win_loss_r']
@@ -99,16 +99,31 @@ class BoxScores(league.BoxScores):
             'road_losses'
         ]
         df = df[cols].set_index(['team_abbr'])
-        df['win_pct'] = np.where(df['games'] > 0, df['wins'] / df['games'], np.nan)
-        df['home_win_pct'] = np.where(df['home'] > 0, df['home_wins'] / df['home'], np.nan)
-        df['road_win_pct'] = np.where(df['road'] > 0, df['road_wins'] / df['road'], np.nan)
+        df['win_pct'] = np.where(
+            df['games'] > 0,
+            df['wins'] / df['games'],
+            np.nan
+        )
+        df['home_win_pct'] = np.where(
+            df['home'] > 0,
+            df['home_wins'] / df['home'],
+            np.nan
+        )
+        df['road_win_pct'] = np.where(
+            df['road'] > 0,
+            df['road_wins'] / df['road'],
+            np.nan
+        )
         df = info.join(df)
         df = df.reset_index()
         return df
 
+
 class AdvancedBoxScores(scrape.NBAStats):
     # TO DO: Fix opposing team ID
-    def __init__(self,
+    def __init__(
+            self, *,
+            scraper,
             team=None,
             opposing_team=None,
             measure_type=params.MeasureType.default(),
@@ -122,9 +137,7 @@ class AdvancedBoxScores(scrape.NBAStats):
             period=params.Period.default(),
             vs_div=params.Division.default(),
             vs_conf=params.Conference.default(),
-            po_round=params.PlayoffRound.default(),
-            nba_stats_requests=None,
-            filehandler=None):
+            po_round=params.PlayoffRound.default()):
         args = params.Arguments(
             team=team,
             opposing_team=opposing_team,
@@ -142,9 +155,6 @@ class AdvancedBoxScores(scrape.NBAStats):
             PORound=po_round,
         )
         super().__init__(
+            scraper=scraper,
             api_endpoint="teamgamelogs",
-            params=args,
-            nba_stats_requests=nba_stats_requests,
-            filehandler=filehandler)
-
-
+            params=args)

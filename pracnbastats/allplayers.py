@@ -2,34 +2,30 @@
 
 """
 
-from collections import namedtuple
+import collections
 import numpy as np
 import pandas as pd
 from . import params
-from . import store
-from . import scrape
+from .table import Table
 from . import utils
+from . import tqdm
+import logging
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(*args, **kwargs):
-        if args:
-            return args[0]
-        return kwargs.get('iterable', None)
+log = logging.getLogger(__name__)
 
 # Singleton module variable
-Data = None
+_Data = None
 
-class Player(namedtuple('AllPlayersRowTuple', [
-        'id',
-        'name',
-        'first_name',
-        'last_name',
-        'code',
-        'from_year',
-        'to_year',
-    ])):
+
+class Player(collections.namedtuple('AllPlayersRowTuple', [
+            'player_id',
+            'name',
+            'first_name',
+            'last_name',
+            'code',
+            'from_year',
+            'to_year',
+])):
     __slots__ = ()
 
     @property
@@ -38,59 +34,74 @@ class Player(namedtuple('AllPlayersRowTuple', [
         end_year = params.Season.current_start_year()
         return range(start_year, end_year+1)
 
+
 def data():
-    global Data
-    return Data.copy()
+    global _Data
+    return _Data.copy()
+
 
 def ids():
     """Iterator of all stats.nba.com player IDs."""
-    global Data
-    return (int(player_id) for player_id in Data['id'])
+    global _Data
+    return (int(player_id) for player_id in _Data['id'])
+
 
 def as_tuples(index=False):
-    """Iterator of namedtuples containing all active and historical NBA players."""
-    global Data
-    return utils.as_tuples(df=Data, to_tuple=Player, index=index)
+    """Iterator of namedtuples for all active and historical NBA players."""
+    global _Data
+    return utils.as_tuples(df=_Data, to_tuple=Player, index=index)
+
 
 def select(index=False, **kwargs):
     """Single namedtuple containing data for an NBA player."""
-    global Data
-    return utils.select_row_as_tuple(df=Data, to_tuple=Player, index=index, **kwargs)
+    global _Data
+    return utils.select_row_as_tuple(
+                df=_Data, to_tuple=Player, index=index, **kwargs)
+
 
 def active(index=False):
     """NBA players active as of the most recent season."""
-    global Data
+    global _Data
     current_year = params.Season.current_start_year()
-    rows = Data[Data['to_year'] >= current_year]
+    rows = _Data[_Data['to_year'] >= current_year]
     return utils.as_tuples(df=rows, to_tuple=Player, index=index)
+
 
 def historical(index=False):
     """NBA players no longer active as of the most recent season."""
-    global Data
+    global _Data
     current_year = params.Season.current_start_year()
-    rows = Data[Data['to_year'] < current_year]
+    rows = _Data[_Data['to_year'] < current_year]
     return utils.as_tuples(df=rows, to_tuple=Player, index=index)
 
-def load(filehandler=None):
-    global Data
-    if filehandler:
-        Data = filehandler.load(
-            scraper=_get_data,
-            tablename='allplayers')
-    else:
-        Data = _get_data()
 
-def _get_data():
-    df = _scrape_all_players()
-    formatted = _format_all_players(df)
-    return _join_player_info(formatted)
+def load(scraper):
+    global _Data
+    table = Table(store_name='allplayers')
+    pipeline = [
+        _scrape_all_players,
+        _format_all_players,
+        _join_player_info,
+    ]
+    _Data = scraper.load_pipeline(
+        table=table,
+        pipeline=pipeline
+    )
 
-def _scrape_all_players():
-    endpoint = 'commonallplayers'
-    args = params.Arguments(Season=params.Season.default(), IsOnlyCurrentSeason=0)
-    return pd.DataFrame(scrape.NBAStats.get(endpoint, args.for_request))
 
-def _format_all_players(df):
+def _scrape_all_players(session):
+    api_params = params.Arguments(
+        Season=params.Season.default(),
+        IsOnlyCurrentSeason=0,
+    )
+    records = session.records(
+        api_endpoint='commonallplayers',
+        api_params=api_params,
+    )
+    return pd.DataFrame(records)
+
+
+def _format_all_players(df, scraper):
     df = df.copy()
     df.columns = df.columns.str.lower()
     keep_cols = [
@@ -108,7 +119,7 @@ def _format_all_players(df):
     df['first_name'] = df['first_name'].str.lstrip(' ')
     df = df.drop(columns=['display_last_comma_first'])
     df = df.rename(columns={
-        'person_id': 'id',
+        'person_id': 'player_id',
         'display_first_last': 'name',
         'playercode': 'code',
     })
@@ -116,16 +127,20 @@ def _format_all_players(df):
     df['to_year'] = df['to_year'].astype(int)
     return df.reset_index(drop=True)
 
-def _scrape_player_info(player_id):
-    endpoint = 'commonplayerinfo'
-    args = params.Arguments(PlayerID=player_id)
-    return scrape.NBAStats.get(endpoint, args.for_request)
 
-def _join_player_info(players):
+def _scrape_player_info(player_id, session):
+    api_params = params.Arguments(PlayerID=player_id)
+    return session.records(
+        api_endpoint='commonplayerinfo',
+        api_params=api_params,
+    )
+
+
+def _join_player_info(players, scraper):
     players = players.copy()
     info = []
-    for player_id in tqdm(players['id']):
-        player_info = _scrape_player_info(player_id)
+    for player_id in tqdm(players['player_id']):
+        player_info = _scrape_player_info(player_id, scraper)
         if isinstance(player_info, list):
             # For some reason, some players have more than one JSON row
             # In my experience, these are duplicates
@@ -148,23 +163,25 @@ def _join_player_info(players):
     df = df[keep_cols]
     df.columns = df.columns.str.lower()
     df = df.rename(columns={
-        'person_id': 'id',
+        'person_id': 'player_id',
         'dleague_flag': 'dleague',
     })
     df['birthdate'] = pd.to_datetime(df['birthdate'])
     df['height'] = df['height'].apply(_convert_height)
     for col in ['position', 'school', 'country']:
         df[col] = df[col].apply(_clean_blanks)
-    df = players.merge(df, on='id')
+    df = players.merge(df, on='player_id')
     return df.reset_index(drop=True)
 
+
 def _clean_blanks(s):
-    if s == None:
+    if not s:
         return np.nan
     elif isinstance(s, str) and s.strip() == '':
         return np.nan
     else:
         return s
+
 
 def _convert_height(s):
     if '-' in s:

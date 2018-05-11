@@ -1,114 +1,119 @@
+from abc import ABC, abstractmethod
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 import shutil
 import pandas as pd
 
-class FileFormat(Enum):
-    CSV = '.csv'
-    PKL = '.pkl'
-    HDF5 = '.hdf5'
 
-    @classmethod
-    def default(cls):
-        return cls.CSV
+def _build_filename(prefix, table, suffix):
+    if table.store_keys:
+        keys = '-'.join(
+            f'{key}({value})'
+            for key, value in table.store_keys.items()
+        )
+    else:
+        keys = None
+    if keys:
+        filename = f'{prefix}-{table.api_endpoint}-{keys}.{suffix}'
+    else:
+        filename = f'{prefix}-{table.api_endpoint}.{suffix}'
+    return filename
 
-class FileHandler():
 
-    _FILE_PREFIX = 'pracnbastats-'
+def _archive(file):
+    filename = str(file)
+    timestamp = datetime.now().isoformat().replace(':', '-')
+    archive_filename = f'{filename}.{timestamp}.bak'
+    shutil.copy(filename, archive_filename)
 
-    def __init__(self, data_dir, file_type=FileFormat.default(), overwrite=False):
-        self._dir = data_dir
-        self._file_type = file_type
-        self._overwrite = overwrite
+
+class _StorageBase(ABC):
+    """Abstract base class for NBA statistics storage format."""
+    def __init__(self, *, path):
+        self._path = Path(path)
 
     @property
-    def dir(self):
-        return self._dir
+    def path(self):
+        return self._path
 
-    @property
-    def file_type(self):
-        return self._file_type
+    @abstractmethod
+    def locator(self, table, **kwargs):
+        pass
 
-    @property
-    def overwrite(self):
-        return self._overwrite
+    @abstractmethod
+    def exists(self, locator, **kwargs):
+        pass
 
-    @overwrite.setter
-    def overwrite(self, on):
-        self._overwrite = on
+    @abstractmethod
+    def load(self, locator, **kwargs):
+        pass
 
-    def load(self, scraper, tablename, params=None):
-        suffix = self.file_type.value
-        filename = self._FILE_PREFIX + tablename
-        if params:
-            for attr_abbr in FileHandler._get_attr_abbrs(params):
-                filename += f'-{attr_abbr}'
-        filename += suffix
-        f = self._dir.joinpath(filename)
-        if f.exists() and not self._overwrite:
-            data = self._load_data(f)
+    @abstractmethod
+    def save(self, locator, archive=True, **kwargs):
+        pass
+
+
+class FlatFiles(_StorageBase):
+    """Store NBA statistics in one or more flat files."""
+    def __init__(self, *, path, suffix, loader, saver):
+        self._prefix = 'pracnbastats'
+        self._suffix = suffix
+        self._loader = loader
+        self._saver = saver
+        super().__init__(path=path)
+
+    def locator(self, table):
+        if table.store_name:
+            filename = f'{self._prefix}-{table.store_name}.{self._suffix}'
         else:
-            data = scraper()
-            if f.exists() and self._overwrite:
-                self._backup(f)
-            self._write_data(f, data)
-        return data
+            filename = _build_filename(
+                prefix=self._prefix,
+                table=table,
+                suffix=self._suffix
+            )
+        return self._path.joinpath(filename)
 
-    def _load_data(self, f):
-        if self.file_type == FileFormat.HDF5:
-            raise ValueError('unimplemented file type', self.file_type)
-        elif self.file_type == FileFormat.CSV:
-            data = pd.read_csv(f)
-        elif self.file_type == FileFormat.PKL:
-            data = pd.read_pickle(f)
-        else:
-            raise ValueError('unimplemented file type', self.file_type)
-        return data
+    def exists(self, locator):
+        return locator.exists()
 
-    def _write_data(self, f, data):
-        if self.file_type == FileFormat.HDF5:
-            raise ValueError('unimplemented file type', self.file_type)
-        elif self.file_type == FileFormat.CSV:
-            data.to_csv(f, index=False, na_rep='NaN', float_format='%.4f')
-        elif self.file_type == FileFormat.PKL:
-            raise ValueError('unimplemented file type')
-        else:
-            raise ValueError('unimplemented file type', self.file_type)
+    def load(self, locator):
+        return self._loader(locator)
 
-    def save_as(self, data, tablename, new_file_type, params=None):
-        suffix = self.new_file_type.value
-        filename = self._FILE_PREFIX + tablename
-        if params:
-            for attr_abbr in FileHandler._get_attr_abbrs(params):
-                filename += f'-{attr_abbr}'
-        filename += suffix
-        f = self._dir.joinpath(filename)
-        if f.exists():
-            self._backup(f)
-        self._write_data(f, data)
+    def save(self, locator, data, archive=True):
+        if self.exists(locator) and archive:
+            _archive(locator)
+        self._saver(data, locator)
 
     @staticmethod
-    def _get_attr_abbrs(params):
-        attr_abbrs = []
-        params_needing_mods = [
-            'Season',
-            'SeasonType',
-            'MeasureType',
-            'Period',
-        ]
-        for param in params_needing_mods:
-            value = params.get(param)
-            if value:
-                attr_abbrs.append(value.attr_abbr)
-        return attr_abbrs
+    def _csv_loader(file):
+        return pd.read_csv(file)
 
-    def _backup(self, file):
-        filename = str(file)
-        timestamp = datetime.now().isoformat().replace(':', '-')
-        backup_filename = filename + f'.{timestamp}.bak'
-        try:
-            shutil.copy(filename, backup_filename)
-        except Exception as e:
-            print('cannot create backup for', filename)
-            raise
+    @staticmethod
+    def _csv_saver(data, file):
+        data.to_csv(file, index=False, na_rep='NaN', float_format='%.4f')
+
+    @staticmethod
+    def _pkl_loader(file):
+        return pd.read_pickle(file)
+
+    @staticmethod
+    def _pkl_saver(data, file):
+        data.to_pickle(file)
+
+    @classmethod
+    def CSV(cls, *, path):
+        return cls(
+            path=path,
+            suffix='csv',
+            loader=FlatFiles._csv_loader,
+            saver=FlatFiles._csv_saver
+        )
+
+    @classmethod
+    def Pickle(cls, *, path):
+        return cls(
+            path=path,
+            suffix='pkl',
+            loader=FlatFiles._pkl_loader,
+            saver=FlatFiles._pkl_saver
+        )

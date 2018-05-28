@@ -24,6 +24,7 @@ from . import store  # noqa: F401
 from . import table  # noqa: F401
 from . import utils  # noqa: F401
 from . import exceptions  # noqa: F401
+from . import playoffs  # noqa: F401
 
 import logging
 log = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ log.addHandler(logging.NullHandler())
 __title__ = 'pracnbastats'
 __url__ = 'https://github.com/practicallypredictable/pracnbastats'
 __status__ = 'Development Status :: 3 - Alpha'
-__version__ = '0.1.2'
+__version__ = '0.1.7'
 __author__ = 'Practically Predictable'
 __author_email__ = 'practicallypredictable@practicallypredictable.com'
 __license__ = 'License :: OSI Approved :: MIT License'

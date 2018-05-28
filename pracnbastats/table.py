@@ -12,7 +12,7 @@ class Table():
             self._store_name = store_name
         elif not self.api_endpoint:
             msg = 'need to specify either store_name or api_endpoint'
-            raise exceptions.TableValueException(msg)
+            raise exceptions.NBAStatsValueException(msg)
         else:
             self._store_name = None
 

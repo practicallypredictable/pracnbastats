@@ -45,7 +45,7 @@ def codes():
     return (team_code for team_code in _Data['code'])
 
 
-def as_tuples(index=False):
+def as_tuples(*, index=False):
     global _Data
     return utils.as_tuples(df=_Data, to_tuple=CurrentTeam, index=index)
 
@@ -56,13 +56,13 @@ def select(index=False, **kwargs):
         df=_Data, to_tuple=CurrentTeam, index=index, **kwargs)
 
 
-def conference(conf, index=False):
+def conference(conf, *, index=False):
     global _Data
     rows = _Data[_Data['conference'] == conf]
     return utils.as_tuples(df=rows, to_tuple=CurrentTeam, index=index)
 
 
-def division(div, index=False):
+def division(div, *, index=False):
     global _Data
     rows = _Data[_Data['division'] == div]
     return utils.as_tuples(df=rows, to_tuple=CurrentTeam, index=index)
